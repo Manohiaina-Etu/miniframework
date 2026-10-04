@@ -1,8 +1,12 @@
 package com.miniframework.core;
 
 import com.miniframework.annotations.GetMapping;
+import com.miniframework.annotations.Param;
+import com.miniframework.annotations.PathVariable;
 import com.miniframework.annotations.PostMapping;
 import com.miniframework.annotations.RequestMapping;
+import com.miniframework.util.TypeConversionException;
+import com.miniframework.util.TypeConverter;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
@@ -12,6 +16,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Parameter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,13 +24,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class FrontController extends HttpServlet {
 
     private static final Set<String> SUPPORTED_VERBS = Set.of("GET", "POST");
 
+    private static final Pattern PATH_VAR = Pattern.compile("\\{([^/{}]+)}");
+
     private final List<Class<?>> controllers = new ArrayList<>();
+
     private final Map<UrlMethod, MappingInfo> routeTable = new LinkedHashMap<>();
+
+    private final Map<UrlMethod, MappingInfo> dynamicRoutes = new LinkedHashMap<>();
 
     // ------------------------------------------------------------------
     // Initialisation : scan + construction de la table de routage
@@ -46,8 +58,9 @@ public class FrontController extends HttpServlet {
         for (Class<?> controllerClass : controllers) {
             registerController(controllerClass);
         }
-        System.out.println("[FrontController] " + routeTable.size() + " route(s) enregistrée(s) : "
-                + routeTable.keySet());
+        System.out.println("[FrontController] " + (routeTable.size() + dynamicRoutes.size())
+                + " route(s) enregistrée(s) : statiques=" + routeTable.keySet()
+                + " dynamiques=" + dynamicRoutes.keySet());
     }
 
     private void registerController(Class<?> controllerClass) throws ServletException {
@@ -63,14 +76,66 @@ public class FrontController extends HttpServlet {
             UrlMethod key = resolveRoute(controllerClass, method);
             if (key == null) continue; // méthode sans annotation de mapping
 
-            MappingInfo existing = routeTable.get(key);
-            if (existing != null) {
-                throw new ServletException("Doublon de route " + key + " : "
-                        + existing.getControllerClass().getName() + "." + existing.getMethod().getName()
-                        + " et " + controllerClass.getName() + "." + method.getName());
-            }
-            routeTable.put(key, new MappingInfo(controllerClass, instance, method));
+            registerRoute(key, new MappingInfo(controllerClass, instance, method));
         }
+    }
+
+    /**
+     * Range la route dans la table statique ou dynamique et détecte les doublons.
+     * Une URL contenant '{' est dynamique : elle est compilée en regex.
+     */
+    private void registerRoute(UrlMethod key, MappingInfo info) throws ServletException {
+        boolean dynamic = key.getUrl().contains("{");
+        if (dynamic) {
+            compileDynamicRoute(key.getUrl(), info);
+        }
+
+        MappingInfo existing = routeTable.get(key);
+        if (existing == null) existing = dynamicRoutes.get(key);
+
+        if (existing == null && dynamic) {
+            for (Map.Entry<UrlMethod, MappingInfo> e : dynamicRoutes.entrySet()) {
+                if (e.getKey().getMethod().equals(key.getMethod())
+                        && e.getValue().getPattern().pattern().equals(info.getPattern().pattern())) {
+                    existing = e.getValue();
+                    break;
+                }
+            }
+        }
+
+        if (existing != null) {
+            throw new ServletException("Doublon de route " + key + " : "
+                    + existing.getControllerClass().getName() + "." + existing.getMethod().getName()
+                    + " et " + info.getControllerClass().getName() + "." + info.getMethod().getName());
+        }
+
+        if (dynamic) {
+            dynamicRoutes.put(key, info);
+        } else {
+            routeTable.put(key, info);
+        }
+    }
+
+    /**
+     * Transforme "/eleve/{id}" en "^\Q/eleve/\E([^/]+)$" et mémorise la liste ["id"].
+     * Les parties fixes sont protégées par Pattern.quote (un '.' ou un '?' dans l'URL
+     * ne doit pas être interprété comme un opérateur de regex).
+     */
+    private void compileDynamicRoute(String url, MappingInfo info) {
+        Matcher m = PATH_VAR.matcher(url);
+        StringBuilder regex = new StringBuilder("^");
+        List<String> names = new ArrayList<>();
+        int last = 0;
+        while (m.find()) {
+            regex.append(Pattern.quote(url.substring(last, m.start())));
+            regex.append("([^/]+)");
+            names.add(m.group(1));
+            last = m.end();
+        }
+        regex.append(Pattern.quote(url.substring(last))).append("$");
+
+        info.setPattern(Pattern.compile(regex.toString()));
+        info.setPathVariableNames(names);
     }
 
     /**
@@ -124,7 +189,9 @@ public class FrontController extends HttpServlet {
         if (url.isEmpty()) url = "/";
         String verb = request.getMethod().toUpperCase(Locale.ROOT);
 
-        MappingInfo mapping = routeTable.get(new UrlMethod(url, verb));
+        Map<String, String> pathVars = new LinkedHashMap<>();
+
+        MappingInfo mapping = resolve(url, verb, pathVars);
 
         if (mapping == null) {
             Set<String> allowed = allowedVerbsFor(url);
@@ -141,7 +208,33 @@ public class FrontController extends HttpServlet {
             return;
         }
 
-        invoke(mapping, response);
+        invoke(mapping, request, response, pathVars);
+    }
+
+    /**
+     * Résolution en deux temps :
+     * 1. recherche exacte dans la table statique (prioritaire : /eleve/form gagne sur /eleve/{id}) ;
+     * 2. sinon parcours des routes dynamiques ayant le même verbe.
+     * Les valeurs capturées sont écrites dans pathVars.
+     */
+    private MappingInfo resolve(String url, String verb, Map<String, String> pathVars) {
+        MappingInfo exact = routeTable.get(new UrlMethod(url, verb));
+        if (exact != null) return exact;
+
+        for (Map.Entry<UrlMethod, MappingInfo> e : dynamicRoutes.entrySet()) {
+            if (!e.getKey().getMethod().equals(verb)) continue;
+
+            MappingInfo info = e.getValue();
+            Matcher m = info.getPattern().matcher(url);
+            if (m.matches()) {
+                List<String> names = info.getPathVariableNames();
+                for (int i = 0; i < names.size(); i++) {
+                    pathVars.put(names.get(i), m.group(i + 1)); // le groupe 0 = tout le match
+                }
+                return info;
+            }
+        }
+        return null;
     }
 
     private Set<String> allowedVerbsFor(String url) {
@@ -149,25 +242,120 @@ public class FrontController extends HttpServlet {
         for (UrlMethod key : routeTable.keySet()) {
             if (key.getUrl().equals(url)) verbs.add(key.getMethod());
         }
+        for (Map.Entry<UrlMethod, MappingInfo> e : dynamicRoutes.entrySet()) {
+            if (e.getValue().getPattern().matcher(url).matches()) verbs.add(e.getKey().getMethod());
+        }
         return verbs;
+    }
+
+    // ------------------------------------------------------------------
+    // Binding des paramètres (Sprint 4)
+    // ------------------------------------------------------------------
+
+    /**
+     * Construit le tableau d'arguments à partir des annotations de chaque paramètre :
+     * @Param -> paramètre HTTP ; @PathVariable -> variable de chemin ;
+     * sans annotation : type simple = erreur, objet complexe = model binding.
+     */
+    private Object[] buildArgs(Method method, HttpServletRequest request, Map<String, String> pathVars) {
+        Parameter[] params = method.getParameters();
+        Object[] args = new Object[params.length];
+
+        for (int i = 0; i < params.length; i++) {
+            Parameter p = params[i];
+            Class<?> type = p.getType();
+            Param param = p.getAnnotation(Param.class);
+            PathVariable pathVar = p.getAnnotation(PathVariable.class);
+
+            try {
+                if (param != null) {
+                    args[i] = TypeConverter.convert(request.getParameter(param.value()), type);
+                } else if (pathVar != null) {
+                    args[i] = TypeConverter.convert(pathVars.get(pathVar.value()), type);
+                } else if (TypeConverter.isSimpleType(type)) {
+                    throw new IllegalStateException("Paramètre '" + p.getName() + "' de "
+                            + method.getDeclaringClass().getSimpleName() + "." + method.getName()
+                            + "() : @Param ou @PathVariable obligatoire pour un type simple.");
+                } else {
+                    args[i] = bindModel(type, request); // objet complexe (ex : Eleve)
+                }
+            } catch (TypeConversionException e) {
+                String nom = param != null ? param.value()
+                        : (pathVar != null ? pathVar.value() : p.getName());
+                throw new TypeConversionException("Paramètre '" + nom + "' : " + e.getMessage());
+            }
+        }
+        return args;
+    }
+
+    /**
+     * Model binding : instancie l'objet par son constructeur par défaut, puis appelle
+     * chaque setter dont le nom de propriété (setNom -> "nom") correspond à un paramètre HTTP.
+     * Seuls les setters à type simple sont gérés (pas d'objets imbriqués à ce sprint).
+     */
+    private Object bindModel(Class<?> type, HttpServletRequest request) {
+        Object instance;
+        try {
+            instance = type.getDeclaredConstructor().newInstance();
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException("La classe " + type.getName()
+                    + " doit avoir un constructeur par défaut (sans argument) public.");
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Impossible d'instancier " + type.getName()
+                    + " : " + e.getMessage());
+        }
+
+        for (Method setter : type.getMethods()) {
+            if (!setter.getName().startsWith("set") || setter.getName().length() <= 3
+                    || setter.getParameterCount() != 1) {
+                continue;
+            }
+            Class<?> paramType = setter.getParameterTypes()[0];
+            if (!TypeConverter.isSimpleType(paramType)) continue;
+
+            String prop = Character.toLowerCase(setter.getName().charAt(3)) + setter.getName().substring(4);
+            String raw = request.getParameter(prop);
+            if (raw == null) continue;
+
+            try {
+                setter.invoke(instance, TypeConverter.convert(raw, paramType));
+            } catch (TypeConversionException e) {
+                throw new TypeConversionException("Champ '" + prop + "' : " + e.getMessage());
+            } catch (InvocationTargetException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                throw new IllegalStateException(setter.getName() + "() de " + type.getName()
+                        + " a levé " + cause.getClass().getName() + " : " + cause.getMessage());
+            } catch (IllegalAccessException e) {
+                throw new IllegalStateException("Accès refusé à " + setter.getName() + "() de "
+                        + type.getName());
+            }
+        }
+        return instance;
     }
 
     // ------------------------------------------------------------------
     // Invocation dynamique par réflexion
     // ------------------------------------------------------------------
-    private void invoke(MappingInfo mapping, HttpServletResponse response) throws IOException {
+    private void invoke(MappingInfo mapping, HttpServletRequest request, HttpServletResponse response,
+                        Map<String, String> pathVars) throws IOException {
         Method method = mapping.getMethod();
         String label = mapping.getControllerClass().getSimpleName() + "." + method.getName() + "()";
 
-        if (method.getParameterCount() > 0) {
-            writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Erreur d'invocation",
-                    "<p><code>" + escape(label) + "</code> attend " + method.getParameterCount()
-                            + " paramètre(s) : le binding sera disponible au Sprint 4.</p>");
+        Object[] args;
+        try {
+            args = buildArgs(method, request, pathVars);
+        } catch (TypeConversionException e) {
+            writeHtml(response, HttpServletResponse.SC_BAD_REQUEST, "400 - Requête invalide",
+                    "<p>" + escape(e.getMessage()) + "</p>");
+            return;
+        } catch (IllegalStateException e) {
+            writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Erreur de binding",
+                    "<p>" + escape(e.getMessage()) + "</p>");
             return;
         }
 
         try {
-            Object result = method.invoke(mapping.getControllerInstance());
+            Object result = method.invoke(mapping.getControllerInstance(), args);
 
             System.out.println("[FrontController] " + label + " -> " + result);
 
@@ -204,6 +392,9 @@ public class FrontController extends HttpServlet {
         StringBuilder sb = new StringBuilder("<ul>");
         for (UrlMethod key : routeTable.keySet()) {
             sb.append("<li>").append(escape(key.toString())).append("</li>");
+        }
+        for (UrlMethod key : dynamicRoutes.keySet()) {
+            sb.append("<li>").append(escape(key.toString())).append(" (dynamique)</li>");
         }
         return sb.append("</ul>").toString();
     }

@@ -1,22 +1,10 @@
 package com.app.controller;
 
-import com.miniframework.annotations.Controller;
-import com.miniframework.annotations.GetMapping;
-import com.miniframework.annotations.PostMapping;
-import com.miniframework.annotations.RequestMapping;
+import com.app.model.Eleve;
+import com.miniframework.annotations.*;
 
 @Controller
 public class EleveController {
-
-    @GetMapping("/eleve/form")
-    public String form() {
-        return "Formulaire élève (GET)";
-    }
-
-    @PostMapping("/eleve/save")
-    public String sauvegarder() {
-        return "Élève enregistré (POST, sans paramètres pour l'instant)";
-    }
 
     @RequestMapping(value = "/eleve/legacy", method = "post")
     public String legacy() {
@@ -26,5 +14,26 @@ public class EleveController {
     @GetMapping("/eleve/erreur")
     public String erreur() {
         throw new IllegalStateException("Erreur volontaire dans le contrôleur");
+    }
+
+    @PostMapping("/eleve/save")
+    public String sauvegarder(@Param("nom") String nom, @Param("age") Integer age) {
+        String r = "4a -> nom=" + nom + ", age=" + age;
+        System.out.println(r);
+        return r;
+    }
+
+    @PostMapping("/eleve/save-model")
+    public String sauvegarderModel(Eleve eleve) {
+        String r = "4b -> " + eleve;
+        System.out.println(r);
+        return r;
+    }
+
+    @GetMapping("/eleve/{id}")
+    public String detail(@PathVariable("id") Integer id) {
+        String r = "4c -> id=" + id;
+        System.out.println(r);
+        return r;
     }
 }
