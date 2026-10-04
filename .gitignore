@@ -1,0 +1,7 @@
+# Artefacts générés par deploy.sh
+build/
+
+# IntelliJ
+.idea/
+*.iml
+out/
