@@ -1,6 +1,7 @@
 package com.miniframework.core;
 
 import com.miniframework.annotations.Controller;
+import com.miniframework.annotations.RestController;
 
 import java.io.File;
 import java.io.IOException;
@@ -18,7 +19,7 @@ import java.util.List;
 public class ClasspathScanner {
 
     private static final List<Class<? extends Annotation>> ANNOTATIONS_CIBLES =
-            List.of(Controller.class);
+            List.of(Controller.class, RestController.class);
 
     private ClasspathScanner() {}
 

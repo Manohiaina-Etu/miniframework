@@ -5,7 +5,9 @@ import com.miniframework.annotations.Param;
 import com.miniframework.annotations.PathVariable;
 import com.miniframework.annotations.PostMapping;
 import com.miniframework.annotations.RequestMapping;
+import com.miniframework.annotations.RestController;
 import com.miniframework.model.ModelView;
+import com.miniframework.util.JsonSerializer;
 import com.miniframework.util.TypeConversionException;
 import com.miniframework.util.TypeConverter;
 import jakarta.servlet.ServletException;
@@ -394,11 +396,17 @@ public class FrontController extends HttpServlet {
                               HttpServletResponse response) throws IOException, ServletException {
         Method method = mapping.getMethod();
         String label = mapping.getControllerClass().getSimpleName() + "." + method.getName() + "()";
+        boolean rest = isRest(mapping);
 
-        if (method.getReturnType() == void.class || result == null) {
+        if (method.getReturnType() == void.class || (result == null && !rest)) {
             if (!response.isCommitted()) {
                 response.setStatus(HttpServletResponse.SC_OK);
             }
+            return;
+        }
+
+        if (rest) {
+            renderJson(label, result, response);
             return;
         }
 
@@ -412,6 +420,41 @@ public class FrontController extends HttpServlet {
                 "<p>Classe : <code>" + escape(mapping.getControllerClass().getName()) + "</code></p>"
                         + "<p>Méthode : <code>" + escape(method.getName()) + "</code></p>"
                         + "<p>Retour : <code>" + escape(String.valueOf(result)) + "</code></p>");
+    }
+
+    /**
+     * Une route est REST si @RestController est sur la classe OU sur la méthode.
+     */
+    private boolean isRest(MappingInfo mapping) {
+        return mapping.getControllerClass().isAnnotationPresent(RestController.class)
+                || mapping.getMethod().isAnnotationPresent(RestController.class);
+    }
+
+    /**
+     * Sérialise le résultat en JSON puis l'écrit. La sérialisation se fait AVANT d'écrire quoi que ce
+     * soit : en cas d'erreur (cycle, getter qui plante), on peut encore répondre proprement en 500.
+     */
+    private void renderJson(String label, Object result, HttpServletResponse response) throws IOException {
+        if (result instanceof ModelView) {
+            writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - ModelView interdit en REST",
+                    "<p><code>" + escape(label) + "</code> est une route REST : elle ne peut pas retourner "
+                            + "un <code>ModelView</code> (retourne un objet, une liste ou une Map).</p>");
+            return;
+        }
+
+        String json;
+        try {
+            json = JsonSerializer.toJson(result);
+        } catch (IllegalStateException e) {
+            writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Erreur de sérialisation JSON",
+                    "<p><code>" + escape(label) + "</code> : " + escape(e.getMessage()) + "</p>");
+            return;
+        }
+
+        if (response.isCommitted()) return;
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.setContentType("application/json; charset=UTF-8"); // avant getWriter()
+        response.getWriter().write(json);
     }
 
     /**
