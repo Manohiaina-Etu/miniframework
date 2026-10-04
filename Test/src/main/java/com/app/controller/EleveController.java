@@ -2,9 +2,25 @@ package com.app.controller;
 
 import com.app.model.Eleve;
 import com.miniframework.annotations.*;
+import com.miniframework.model.ModelView;
 
 @Controller
 public class EleveController {
+
+    @GetMapping("/eleve/form")
+    public ModelView form() {
+        return new ModelView("eleve-form");
+    }
+
+    @GetMapping("/eleve/vide")
+    public void vide() {
+        System.out.println("vide() appelée");
+    }
+
+    @GetMapping("/eleve/vue-inconnue")
+    public ModelView vueInconnue() {
+        return new ModelView("nexiste-pas");
+    }
 
     @RequestMapping(value = "/eleve/legacy", method = "post")
     public String legacy() {
@@ -17,10 +33,14 @@ public class EleveController {
     }
 
     @PostMapping("/eleve/save")
-    public String sauvegarder(@Param("nom") String nom, @Param("age") Integer age) {
-        String r = "4a -> nom=" + nom + ", age=" + age;
-        System.out.println(r);
-        return r;
+    public ModelView sauvegarder(@Param("nom") String nom, @Param("age") Integer age) {
+        Eleve eleve = new Eleve(nom, age);
+        System.out.println("Sprint 5 -> " + eleve);
+
+        ModelView mv = new ModelView("confirmation");
+        mv.addObject("eleve", eleve);
+        mv.addObject("message", "Élève enregistré avec succès !");
+        return mv;
     }
 
     @PostMapping("/eleve/save-model")

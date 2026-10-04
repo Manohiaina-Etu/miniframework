@@ -5,6 +5,7 @@ import com.miniframework.annotations.Param;
 import com.miniframework.annotations.PathVariable;
 import com.miniframework.annotations.PostMapping;
 import com.miniframework.annotations.RequestMapping;
+import com.miniframework.model.ModelView;
 import com.miniframework.util.TypeConversionException;
 import com.miniframework.util.TypeConverter;
 import jakarta.servlet.ServletException;
@@ -337,7 +338,7 @@ public class FrontController extends HttpServlet {
     // Invocation dynamique par réflexion
     // ------------------------------------------------------------------
     private void invoke(MappingInfo mapping, HttpServletRequest request, HttpServletResponse response,
-                        Map<String, String> pathVars) throws IOException {
+                        Map<String, String> pathVars) throws IOException, ServletException {
         Method method = mapping.getMethod();
         String label = mapping.getControllerClass().getSimpleName() + "." + method.getName() + "()";
 
@@ -354,16 +355,9 @@ public class FrontController extends HttpServlet {
             return;
         }
 
+        Object result;
         try {
-            Object result = method.invoke(mapping.getControllerInstance(), args);
-
-            System.out.println("[FrontController] " + label + " -> " + result);
-
-            writeHtml(response, HttpServletResponse.SC_OK, "Invocation réussie",
-                    "<p>Classe : <code>" + escape(mapping.getControllerClass().getName()) + "</code></p>"
-                            + "<p>Méthode : <code>" + escape(method.getName()) + "</code></p>"
-                            + "<p>Retour (voir aussi les logs Tomcat) : <code>" + escape(String.valueOf(result))
-                            + "</code></p>");
+            result = method.invoke(mapping.getControllerInstance(), args);
 
         } catch (InvocationTargetException e) {
             Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -371,18 +365,80 @@ public class FrontController extends HttpServlet {
             writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Exception dans le contrôleur",
                     "<p><code>" + escape(label) + "</code> a levé <b>" + escape(cause.getClass().getName())
                             + "</b> : " + escape(String.valueOf(cause.getMessage())) + "</p>");
+            return;
 
         } catch (IllegalAccessException e) {
+            // Méthode non publique / classe non accessible
             e.printStackTrace();
             writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Accès refusé",
                     "<p>Impossible d'accéder à <code>" + escape(label)
                             + "</code> : la méthode et la classe doivent être <b>public</b>.</p>");
+            return;
 
         } catch (IllegalArgumentException e) {
             e.printStackTrace();
             writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Arguments invalides",
                     "<p>Appel de <code>" + escape(label) + "</code> impossible : " + escape(e.getMessage()) + "</p>");
+            return;
         }
+
+        renderResult(mapping, result, request, response);
+    }
+
+    /**
+     * Choisit le rendu selon la valeur retournée par le contrôleur :
+     * - void / null  -> 200 sans corps ;
+     * - ModelView    -> copie dans les attributs de requête puis forward vers la JSP ;
+     */
+    private void renderResult(MappingInfo mapping, Object result, HttpServletRequest request,
+                              HttpServletResponse response) throws IOException, ServletException {
+        Method method = mapping.getMethod();
+        String label = mapping.getControllerClass().getSimpleName() + "." + method.getName() + "()";
+
+        if (method.getReturnType() == void.class || result == null) {
+            if (!response.isCommitted()) {
+                response.setStatus(HttpServletResponse.SC_OK);
+            }
+            return;
+        }
+
+        if (result instanceof ModelView mv) {
+            forwardToView(mv, label, request, response);
+            return;
+        }
+
+        System.out.println("[FrontController] " + label + " -> " + result);
+        writeHtml(response, HttpServletResponse.SC_OK, "Invocation réussie",
+                "<p>Classe : <code>" + escape(mapping.getControllerClass().getName()) + "</code></p>"
+                        + "<p>Méthode : <code>" + escape(method.getName()) + "</code></p>"
+                        + "<p>Retour : <code>" + escape(String.valueOf(result)) + "</code></p>");
+    }
+
+    /**
+     * Injecte le modèle dans la requête et fait un FORWARD interne (pas un redirect :
+     * l'URL du navigateur ne change pas). Grâce au mapping "/", le forward vers *.jsp est
+     * traité par la JspServlet de Tomcat et ne repasse pas par le FrontController.
+     */
+    private void forwardToView(ModelView mv, String label, HttpServletRequest request,
+                               HttpServletResponse response) throws IOException, ServletException {
+        String viewName = mv.getViewName();
+        if (viewName == null || viewName.isBlank()) {
+            writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Vue manquante",
+                    "<p><code>" + escape(label) + "</code> a retourné un ModelView sans nom de vue.</p>");
+            return;
+        }
+
+        String path = "/WEB-INF/views/" + viewName + ".jsp";
+
+        if (getServletContext().getResource(path) == null) {
+            writeHtml(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR, "500 - Vue introuvable",
+                    "<p><code>" + escape(label) + "</code> demande la vue <code>" + escape(path)
+                            + "</code>, qui n'existe pas.</p>");
+            return;
+        }
+
+        mv.getData().forEach(request::setAttribute);
+        request.getRequestDispatcher(path).forward(request, response);
     }
 
     // ------------------------------------------------------------------
