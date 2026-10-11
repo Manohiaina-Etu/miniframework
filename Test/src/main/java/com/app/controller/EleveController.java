@@ -1,8 +1,11 @@
 package com.app.controller;
 
 import com.app.model.Eleve;
+import com.app.model.Inscription;
 import com.miniframework.annotations.*;
 import com.miniframework.model.ModelView;
+
+import java.util.List;
 
 @Controller
 public class EleveController {
@@ -53,6 +56,45 @@ public class EleveController {
     @GetMapping("/eleve/{id}")
     public String detail(@PathVariable("id") Integer id) {
         String r = "4c -> id=" + id;
+        System.out.println(r);
+        return r;
+    }
+
+    // ------------------------------------------------------------------
+    // Extension : @Param sur listes et objets (préfixe HTTP)
+    // ------------------------------------------------------------------
+
+    @PostMapping("/eleve/liste")
+    public String liste(@Param("eleves") List<String> eleves) {
+        String r = "liste -> " + eleves;
+        System.out.println(r);
+        return r;
+    }
+
+    @PostMapping("/eleve/notes")
+    public String notes(@Param("notes") List<List<Integer>> notes) {
+        String r = "notes -> " + notes;
+        System.out.println(r);
+        return r;
+    }
+
+    @PostMapping("/eleve/save-param")
+    public String sauvegarderParam(@Param("eleve") Eleve eleve) {
+        String r = "param -> " + eleve;
+        System.out.println(r);
+        return r;
+    }
+
+    @PostMapping("/eleve/lot")
+    public String lot(@Param("eleves") List<Eleve> eleves) {
+        String r = "lot -> " + eleves;
+        System.out.println(r);
+        return r;
+    }
+
+    @PostMapping("/inscription/save")
+    public String inscription(@Param("inscription") Inscription inscription) {
+        String r = "inscription -> " + inscription;
         System.out.println(r);
         return r;
     }
