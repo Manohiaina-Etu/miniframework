@@ -14,6 +14,11 @@
             <param-value>com.app.controller</param-value>
         </init-param>
         <load-on-startup>1</load-on-startup>
+        <multipart-config>
+            <max-file-size>20000000</max-file-size>
+            <max-request-size>500000000</max-request-size>
+            <file-size-threshold>10000000</file-size-threshold>
+        </multipart-config>
     </servlet>
 
     <servlet-mapping>

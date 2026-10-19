@@ -7,6 +7,8 @@ import com.miniframework.annotations.PostMapping;
 import com.miniframework.annotations.RequestMapping;
 import com.miniframework.annotations.RestController;
 import com.miniframework.model.ModelView;
+import com.miniframework.model.UploadedFile;
+import com.miniframework.util.AppConfig;
 import com.miniframework.util.JsonSerializer;
 import com.miniframework.util.TypeConversionException;
 import com.miniframework.util.TypeConverter;
@@ -14,8 +16,10 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.Part;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -59,6 +63,12 @@ public class FrontController extends HttpServlet {
         String basePackage = getInitParameter("base-package");
         if (basePackage == null || basePackage.isBlank()) {
             throw new ServletException("init-param 'base-package' manquant dans web.xml");
+        }
+
+        try {
+            AppConfig.load("application.properties");
+        } catch (IOException e) {
+            throw new ServletException("Échec du chargement de application.properties", e);
         }
 
         try {
@@ -260,6 +270,41 @@ public class FrontController extends HttpServlet {
         return verbs;
     }
 
+    private static boolean isUploadedFileList(Parameter p) {
+        return p.getParameterizedType() instanceof ParameterizedType pt
+                && pt.getRawType() == List.class
+                && pt.getActualTypeArguments().length == 1
+                && pt.getActualTypeArguments()[0] == UploadedFile.class;
+    }
+
+    private List<UploadedFile> readUploadedFiles(String fieldName, HttpServletRequest request)
+            throws IOException, ServletException {
+        List<UploadedFile> files = new ArrayList<>();
+
+        String contentType = request.getContentType();
+        if (contentType == null || !contentType.toLowerCase(Locale.ROOT).startsWith("multipart/")) {
+            return files;
+        }
+
+        for (Part part : request.getParts()) {
+            if (!part.getName().equals(fieldName)) continue;
+
+            String fileName = part.getSubmittedFileName();
+            if (fileName == null) continue; // champ texte du formulaire, pas un fichier
+
+            byte[] octets;
+            try (InputStream in = part.getInputStream()) {
+                octets = in.readAllBytes();
+            }
+
+            UploadedFile file = new UploadedFile(fileName, part.getContentType(), octets);
+            if (!file.isEmpty()) {
+                files.add(file);
+            }
+        }
+        return files;
+    }
+
     // ------------------------------------------------------------------
     // Binding des paramètres (Sprint 4 + extension @Param liste/objet)
     // ------------------------------------------------------------------
@@ -271,7 +316,8 @@ public class FrontController extends HttpServlet {
      * - @PathVariable               -> variable de chemin ;
      * - sans annotation : type simple ou liste = erreur, objet = model binding sans préfixe.
      */
-    private Object[] buildArgs(Method method, HttpServletRequest request, Map<String, String> pathVars) {
+    private Object[] buildArgs(Method method, HttpServletRequest request, Map<String, String> pathVars)
+            throws ServletException, IOException {
         Parameter[] params = method.getParameters();
         Object[] args = new Object[params.length];
 
@@ -283,7 +329,20 @@ public class FrontController extends HttpServlet {
 
             try {
                 if (param != null) {
-                    if (TypeConverter.isSimpleType(type)) {
+                    if (type == UploadedFile.class) {
+                        System.out.println("==>TYPE_UPLOADEDFILE::" + type.getName());
+                        System.out.println("==>param.value()::" + param.value());
+                        List<UploadedFile> files = readUploadedFiles(param.value(), request);
+                        if (files.size() > 1) {
+                            throw new TypeConversionException(files.size()
+                                    + " fichiers reçus, un seul attendu (utiliser List<UploadedFile>)");
+                        }
+                        args[i] = files.isEmpty() ? null : files.get(0);
+                    } else if (isUploadedFileList(p)) {
+                        System.out.println("==>TYPE_LISTOF_UPLOADEDFILE::" + type.getName());
+                        System.out.println("==>param.value()::" + param.value());
+                        args[i] = readUploadedFiles(param.value(), request);
+                    } else if (TypeConverter.isSimpleType(type)) {
                         args[i] = TypeConverter.convert(request.getParameter(param.value()), type);
                     } else {
                         args[i] = bindValue(p.getParameterizedType(), param.value(), request);

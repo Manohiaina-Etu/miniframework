@@ -4,11 +4,17 @@ import com.app.model.Eleve;
 import com.app.model.Inscription;
 import com.miniframework.annotations.*;
 import com.miniframework.model.ModelView;
+import com.miniframework.model.UploadedFile;
+import com.miniframework.util.AppConfig;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.List;
 
 @Controller
 public class EleveController {
+
+    private Path dossier = Path.of(AppConfig.get("upload.dir"));
 
     @GetMapping("/eleve/form")
     public ModelView form() {
@@ -97,5 +103,33 @@ public class EleveController {
         String r = "inscription -> " + inscription;
         System.out.println(r);
         return r;
+    }
+
+    @GetMapping("/inscription/form")
+    public ModelView inscriptionForm() {
+        return new ModelView("inscription");
+    }
+
+    @PostMapping("/inscription/save_eleve")
+    public String uploadFile(@Param("eleve") Eleve eleve, @Param("fichier") UploadedFile fichier) throws IOException {
+        StringBuilder sb = new StringBuilder("nom=" + eleve.getNom() + " | age=" + eleve.getAge() + " | ");
+        sb.append(fichier.getName()).append(" (").append(fichier.getMimeType())
+                .append(", ").append(fichier.getSize()).append(" octets) ");
+//        fichier.saveTo(Path.of("C:/uploads/photo-" + fichier.getName() + ".png"));
+        fichier.saveTo(Path.of(dossier + "/" + fichier.getName()));
+        return sb.toString();
+    }
+
+    @PostMapping("/inscription/save_eleve_files")
+    public String uploadFiles(@Param("eleve") Eleve eleve, @Param("fichiers") List<UploadedFile> fichiers) throws IOException {
+        StringBuilder sb = new StringBuilder("nom=" + eleve.getNom() + " | age=" + eleve.getAge() + " | ");
+        if(!fichiers.isEmpty()) System.out.println("==>NBR_FILES::" + fichiers.size());
+        else System.out.println("==>NBR_FILES:: EMPTY");
+        for (UploadedFile f : fichiers) {
+            sb.append(f.getName()).append(" (").append(f.getMimeType())
+                    .append(", ").append(f.getSize()).append(" octets) ");
+            f.saveTo(Path.of("C:/uploads/photo-" + f.getName()));
+        }
+        return sb.toString();
     }
 }
